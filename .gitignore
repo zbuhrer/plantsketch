@@ -24,6 +24,7 @@ wheels/
 venv/
 env/
 ENV/
+gardenvenv/
 
 # IDE
 .idea/
@@ -80,3 +81,7 @@ temp/
 *.tsv
 *.sqlite
 *.db
+
+# Project specific
+projects/
+database.db
