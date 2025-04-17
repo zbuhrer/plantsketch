@@ -1,2 +1,22 @@
-opencv-python
-streamlit
+# Main dependencies
+opencv-python==4.11.0.86
+streamlit==1.44.1
+open3d==0.19.0
+
+# Core required dependencies
+numpy==2.2.4
+pandas==2.2.3
+matplotlib==3.10.1
+scipy==1.15.2
+scikit-learn==1.6.1
+pillow==11.2.1
+
+# Web dependencies
+dash==3.0.3
+flask==3.0.3
+werkzeug==3.0.6
+
+# Tools and utilities
+tqdm==4.67.1
+pyquaternion==0.9.9
+pyyaml==6.0.2
