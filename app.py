@@ -33,9 +33,21 @@ if input_method == "Video":
             st.write("Extracting frames...")
             frame_count = extract_frames(video_path, base / "frames", fps=fps)
 
+            # Create placeholder for real-time logging
+            st.write("## Processing Status")
+            log_display = st.empty()
+            log_content = "Starting reconstruction process...\n"
+            log_display.code(log_content, language="text")
+
             st.write("Running 3D reconstruction...")
             log_path = base / "reconstruction_log.txt"
-            success = reconstruct_with_open3d(base / "frames", base / "output_pointcloud", log_path)
+            success, log_content = reconstruct_with_open3d(
+                base / "frames",
+                base / "output_pointcloud",
+                log_path,
+                log_display=log_display,
+                log_content=log_content
+            )
 
             insert_scan(uuid, video_file.name, frame_count, success)
 
@@ -43,12 +55,12 @@ if input_method == "Video":
                 st.success(f"Scan complete! UUID: {uuid}")
                 # Show the log for verification
                 with open(log_path, "r") as f:
-                    st.expander("Reconstruction Log").code(f.read(), language="text")
+                    st.expander("Complete Reconstruction Log").code(f.read(), language="text")
             else:
                 st.error("Reconstruction failed.")
                 # Show error details
                 with open(log_path, "r") as f:
-                    st.expander("Error Details").code(f.read(), language="text")
+                    st.expander("Complete Error Details").code(f.read(), language="text")
 else:
     image_files = st.file_uploader("Upload garden images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
@@ -70,9 +82,21 @@ else:
                     f.write(img.read())
                 frame_count += 1
 
+            # Create placeholder for real-time logging
+            st.write("## Processing Status")
+            log_display = st.empty()
+            log_content = "Starting reconstruction process...\n"
+            log_display.code(log_content, language="text")
+
             st.write("Running 3D reconstruction...")
             log_path = base / "reconstruction_log.txt"
-            success = reconstruct_with_open3d(frames_dir, base / "output_pointcloud", log_path)
+            success, log_content = reconstruct_with_open3d(
+                frames_dir,
+                base / "output_pointcloud",
+                log_path,
+                log_display=log_display,
+                log_content=log_content
+            )
 
             # Use a batch name as reference
             reference_name = f"batch_upload_{len(image_files)}_images"
@@ -83,12 +107,12 @@ else:
                 st.success(f"Scan complete! UUID: {uuid}")
                 # Show the log for verification
                 with open(log_path, "r") as f:
-                    st.expander("Reconstruction Log").code(f.read(), language="text")
+                    st.expander("Complete Reconstruction Log").code(f.read(), language="text")
             else:
                 st.error("Reconstruction failed.")
                 # Show error details
                 with open(log_path, "r") as f:
-                    st.expander("Error Details").code(f.read(), language="text")
+                    st.expander("Complete Error Details").code(f.read(), language="text")
 
 st.subheader("Scan History")
 for row in get_all_scans():
