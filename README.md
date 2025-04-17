@@ -1,11 +1,21 @@
 # PlantSketch
 
-PlantSketch is a tool for creating 3D models of gardens and plants from video footage. The application extracts frames from videos, processes them through Meshroom (a photogrammetry software), and generates 3D point clouds and models for visualization and analysis.
+PlantSketch is a tool for creating 3D point cloud models of plants and gardens from video footage or images. The application provides an easy-to-use interface for processing visual data and generating 3D visualizations that can be used for garden planning, plant analysis, and documentation.
+
+## Features
+
+- **Dual Input Methods**: Process either video footage or multiple image files
+- **Frame Extraction**: Automatically extract frames from videos at adjustable FPS
+- **3D Reconstruction**: Generate point clouds using Open3D technology
+- **Project Management**: Track scan history with unique IDs for each project
+- **User-Friendly Interface**: Simple Streamlit web interface for easy operation
 
 ## Requirements
 
 - Python 3.8 or higher
-- Meshroom (for 3D reconstruction)
+- OpenCV for image and video processing
+- Open3D for 3D reconstruction
+- Streamlit for the web interface
 
 ## Installation
 
@@ -17,17 +27,14 @@ PlantSketch is a tool for creating 3D models of gardens and plants from video fo
 
 2. Create a virtual environment and activate it:
    ```
-   python -m gardenvenv venv
-   source gardenvenv/bin/activate
+   python -m venv gardenvenv
+   source gardenvenv/bin/activate  # On Windows: gardenvenv\Scripts\activate
    ```
 
 3. Install dependencies:
    ```
    pip install -r requirements.txt
    ```
-
-4. Install Meshroom following the instructions at [https://alicevision.org/#meshroom](https://alicevision.org/#meshroom)
-   - Make sure the `meshroom_batch` command is available in your PATH
 
 ## Usage
 
@@ -36,13 +43,14 @@ PlantSketch is a tool for creating 3D models of gardens and plants from video fo
    streamlit run app.py
    ```
 
-2. In your web browser:
-   - Upload a video file of your garden or plants
-   - Adjust the FPS slider to control how many frames are extracted
+2. Using the web interface:
+   - Choose between video or image input
+   - For video: Upload a video file and adjust the FPS slider
+   - For images: Upload multiple image files (minimum 5 recommended)
    - Click "Start Scan" to begin processing
-   - The application will extract frames, run Meshroom, and store the results
+   - View the processing log and results
 
-3. View scan history at the bottom of the page
+3. Review scan history at the bottom of the page
 
 ## System Architecture
 
@@ -54,7 +62,7 @@ classDiagram
 
     class DatabaseHandler {
         +init_db()
-        +insert_scan(uuid, video_name, num_frames, meshroom_success, notes)
+        +insert_scan(uuid, video_name, num_frames, reconstruction_success, notes)
         +get_all_scans()
     }
 
@@ -64,7 +72,7 @@ classDiagram
 
     class Reconstructor {
         +create_project_dir()
-        +run_meshroom(frames_dir, output_dir, log_path)
+        +reconstruct_with_open3d(frames_dir, output_dir, log_path)
     }
 
     App --> DatabaseHandler
