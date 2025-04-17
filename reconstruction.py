@@ -30,7 +30,7 @@ def run_meshroom(frames_dir, output_dir, log_path):
 
 def estimate_depth(img, log_func):
     """Improved depth estimation with better filtering"""
-    log_func(f"Estimating depth with improved method")
+    log_func("Estimating depth with improved method")
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
     # Apply Gaussian blur to reduce noise
@@ -49,7 +49,7 @@ def estimate_depth(img, log_func):
 
     # Check if depth estimation succeeded
     if gradient_magnitude.max() == 0:
-        log_func(f"Error: Depth approximation failed (all zeros)")
+        log_func("Error: Depth approximation failed (all zeros)")
         return None
 
     # Normalize to proper depth range
@@ -60,6 +60,9 @@ def reconstruct_with_open3d(frames_dir, output_dir, log_path, log_display=None, 
     """Process images into a point cloud using Open3D with real-time logging"""
     frames_dir = Path(frames_dir)
     output_dir = Path(output_dir)
+
+    # Initialize tracking for registration progress
+    registration_data = []
 
     def log(message):
         """Helper function to log messages to both file and UI"""
@@ -88,7 +91,7 @@ def reconstruct_with_open3d(frames_dir, output_dir, log_path, log_display=None, 
     log(f"Found {len(image_paths)} images: {[p.name for p in image_paths]}")
 
     if len(image_paths) < 5:
-        log(f"Error: Need at least 5 images for reliable reconstruction")
+        log("Error: Need at least 5 images for reliable reconstruction")
         return (False, log_content) if log_display else False
 
     # Load images and create point clouds
@@ -111,7 +114,7 @@ def reconstruct_with_open3d(frames_dir, output_dir, log_path, log_display=None, 
         fx = fy = width * 1.2  # Better focal length estimate for typical smartphone
         cx, cy = width/2, height/2  # Principal point
         camera_intrinsic = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, cx, cy)
-        log(f"Camera intrinsic matrix set up with smartphone estimates")
+        log("Camera intrinsic matrix set up with smartphone estimates")
         log(f"Focal length: fx={fx}, fy={fy}, principal point: ({cx}, {cy})")
     except Exception as e:
         log(f"Error setting up camera parameters: {str(e)}")
@@ -124,12 +127,12 @@ def reconstruct_with_open3d(frames_dir, output_dir, log_path, log_display=None, 
 
             # Load color image
             color = o3d.io.read_image(str(path))
-            log(f"  Color image loaded successfully")
+            log("  Color image loaded successfully")
 
             # Use improved depth estimation
             img = cv2.imread(str(path))
             if img is None:
-                log(f"  Error: Could not read image with OpenCV")
+                log("  Error: Could not read image with OpenCV")
                 continue
 
             depth_approx = estimate_depth(img, log)
@@ -137,12 +140,12 @@ def reconstruct_with_open3d(frames_dir, output_dir, log_path, log_display=None, 
                 continue
 
             depth = o3d.geometry.Image(depth_approx)
-            log(f"  Depth image created successfully")
+            log("  Depth image created successfully")
 
             # Create RGBD image
             rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
                 color, depth, depth_scale=1000.0, depth_trunc=3.0, convert_rgb_to_intensity=False)
-            log(f"  RGBD image created successfully")
+            log("  RGBD image created successfully")
 
             # Create point cloud from RGBD image
             pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, camera_intrinsic)
@@ -157,13 +160,17 @@ def reconstruct_with_open3d(frames_dir, output_dir, log_path, log_display=None, 
 
     # Perform point cloud registration when we have enough point clouds
     if len(pcds) >= 2:
-        log(f"Performing point cloud registration")
+        log("Performing point cloud registration")
         try:
             # First point cloud is our reference
             pcd_combined = pcds[0]
+            total_to_register = len(pcds) - 1
+            registered_count = 0
 
             # Register each subsequent point cloud to the combined one
             for i in range(1, len(pcds)):
+                start_time = datetime.now()
+
                 if len(pcds[i].points) < 10:
                     log(f"  Skipping point cloud {i} - too few points")
                     continue
@@ -182,17 +189,36 @@ def reconstruct_with_open3d(frames_dir, output_dir, log_path, log_display=None, 
 
                 log(f"  Registration fitness: {result.fitness}")
 
+                # Calculate processing time
+                processing_time = (datetime.now() - start_time).total_seconds()
+
                 # Transform the point cloud based on registration result
                 pcds[i].transform(result.transformation)
 
                 # Add to combined point cloud
                 pcd_combined += pcds[i]
+
+                # Update registration tracking
+                registered_count += 1
+                progress_percentage = (registered_count / total_to_register) * 100
+
+                # Store metrics for this registration
+                registration_data.append({
+                    'index': i,
+                    'timestamp': datetime.now().strftime("%H:%M:%S"),
+                    'points': len(pcds[i].points),
+                    'fitness': float(result.fitness),
+                    'processing_time': processing_time,
+                    'percent_complete': progress_percentage
+                })
+
+                log(f"  Progress: {progress_percentage:.1f}% ({registered_count}/{total_to_register})")
         except Exception as e:
             log(f"Error during point cloud registration: {str(e)}")
             log(traceback.format_exc())
             # Continue with available point clouds even if registration fails
     else:
-        log(f"Not enough valid point clouds for registration")
+        log("Not enough valid point clouds for registration")
         if len(pcds) == 1:
             pcd_combined = pcds[0]
 
@@ -200,24 +226,24 @@ def reconstruct_with_open3d(frames_dir, output_dir, log_path, log_display=None, 
     if pcd_combined and len(pcd_combined.points) > 0:
         log(f"Combined point cloud has {len(pcd_combined.points)} points")
     else:
-        log(f"Combined point cloud is empty")
-        return (False, log_content) if log_display else False
+        log("Combined point cloud is empty")
+        return (False, log_content, registration_data) if log_display else (False, registration_data)
 
     # Downsample for better performance
     if len(pcd_combined.points) > 0:
         try:
-            log(f"Starting downsampling process")
+            log("Starting downsampling process")
             pcd_combined = pcd_combined.voxel_down_sample(voxel_size=0.02)
             log(f"Downsampled to {len(pcd_combined.points)} points")
 
             # Estimate normals with increased search radius for better results
-            log(f"Estimating normals")
+            log("Estimating normals")
             pcd_combined.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
             pcd_combined.orient_normals_consistent_tangent_plane(20)  # Improved normal orientation
-            log(f"Normals estimated successfully")
+            log("Normals estimated successfully")
 
             # Statistical outlier removal for cleaner point cloud
-            log(f"Removing outliers")
+            log("Removing outliers")
             pcd_combined, _ = pcd_combined.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
             log(f"After outlier removal: {len(pcd_combined.points)} points")
 
@@ -225,14 +251,14 @@ def reconstruct_with_open3d(frames_dir, output_dir, log_path, log_display=None, 
             output_path = str(output_dir / "pointcloud.ply")
             log(f"Saving point cloud to {output_path}")
             o3d.io.write_point_cloud(output_path, pcd_combined)
-            log(f"Point cloud saved successfully")
+            log("Point cloud saved successfully")
 
             log(f"Successfully created point cloud with {len(pcd_combined.points)} points")
-            return (True, log_content) if log_display else True
+            return (True, log_content, registration_data) if log_display else (True, registration_data)
         except Exception as e:
             log(f"Error in final processing: {str(e)}")
             log(traceback.format_exc())
-            return (False, log_content) if log_display else False
+            return (False, log_content, registration_data) if log_display else (False, registration_data)
     else:
-        log(f"Failed to create point cloud: no points generated")
-        return (False, log_content) if log_display else False
+        log("Failed to create point cloud: no points generated")
+        return (False, log_content, registration_data) if log_display else (False, registration_data)
