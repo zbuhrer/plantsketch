@@ -5,7 +5,7 @@ import shutil
 
 from db import init_db, insert_scan, get_all_scans
 from extract_frames import extract_frames
-from reconstruction import create_project_dir, run_meshroom
+from reconstruction import create_project_dir, reconstruct_with_open3d
 
 init_db()
 st.title("Plantsketch")
@@ -31,15 +31,15 @@ if input_method == "Video":
             st.write("Extracting frames...")
             frame_count = extract_frames(video_path, base / "frames", fps=fps)
 
-            st.write("Running Meshroom...")
-            success = run_meshroom(base / "frames", base / "meshroom_project", base / "meshroom_log.txt")
+            st.write("Running 3D reconstruction...")
+            success = reconstruct_with_open3d(base / "frames", base / "output_pointcloud", base / "reconstruction_log.txt")
 
             insert_scan(uuid, video_file.name, frame_count, success)
 
             if success:
                 st.success(f"Scan complete! UUID: {uuid}")
             else:
-                st.error("Meshroom failed.")
+                st.error("Reconstruction failed.")
 else:
     image_files = st.file_uploader("Upload garden images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
@@ -58,8 +58,8 @@ else:
                     f.write(img.read())
                 frame_count += 1
 
-            st.write("Running Meshroom...")
-            success = run_meshroom(frames_dir, base / "meshroom_project", base / "meshroom_log.txt")
+            st.write("Running 3D reconstruction...")
+            success = reconstruct_with_open3d(frames_dir, base / "output_pointcloud", base / "reconstruction_log.txt")
 
             # Use a batch name as reference
             reference_name = f"batch_upload_{len(image_files)}_images"
@@ -69,7 +69,7 @@ else:
             if success:
                 st.success(f"Scan complete! UUID: {uuid}")
             else:
-                st.error("Meshroom failed.")
+                st.error("Reconstruction failed.")
 
 st.subheader("Scan History")
 for row in get_all_scans():
