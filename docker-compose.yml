@@ -1,0 +1,17 @@
+services:
+  plantsketch:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      - plantsketch_projects:/app/projects
+      - plantsketch_venv:/app/gardenvenv
+    restart: unless-stopped
+    environment:
+      - STREAMLIT_SERVER_MAX_UPLOAD_SIZE=200
+
+volumes:
+  plantsketch_projects:
+    driver: local
+  plantsketch_venv:
+    driver: local
