@@ -1,12 +1,10 @@
-# reconstruction.py
-import os
 from pathlib import Path
-import subprocess
 import uuid
 import open3d as o3d
 import numpy as np
 import cv2
 import traceback
+import pickle  # Import the pickle module
 from datetime import datetime
 
 PROJECTS_ROOT = Path("projects")
@@ -56,13 +54,20 @@ def estimate_depth(img, log_func):
     depth = (gradient_magnitude / np.max(gradient_magnitude) * 1000).astype(np.uint16)
     return depth
 
-def reconstruct_with_open3d(frames_dir, output_dir, log_path, log_display=None, log_content=""):
-    """Process images into a point cloud using Open3D with real-time logging"""
+def reconstruct_with_open3d(frames_dir, output_dir, log_path, log_display=None, log_content="", start_frame=0, checkpoint_dir=None, uuid=None, frame_count=0):
+    """Process images into a point cloud using Open3D with real-time logging and checkpointing"""
     frames_dir = Path(frames_dir)
     output_dir = Path(output_dir)
+    if checkpoint_dir:
+        checkpoint_file = Path(checkpoint_dir) / "reconstruction_checkpoint.pkl"
+    else:
+        checkpoint_file = output_dir / "reconstruction_checkpoint.pkl"  # Define checkpoint file
 
     # Initialize tracking for registration progress
     registration_data = []
+    pcds = []  # Store individual point clouds for registration
+    pcd_combined = o3d.geometry.PointCloud()
+    CHECKPOINT_INTERVAL = 5  # Save checkpoint every 5 frames (adjust as needed)
 
     def log(message):
         """Helper function to log messages to both file and UI"""
@@ -95,10 +100,20 @@ def reconstruct_with_open3d(frames_dir, output_dir, log_path, log_display=None, 
         return (False, log_content) if log_display else False
 
     # Load images and create point clouds
-    pcds = []  # Store individual point clouds for registration
-    pcd_combined = o3d.geometry.PointCloud()
+    # Attempt to load checkpoint
+    if checkpoint_file.exists():
+        try:
+            with open(checkpoint_file, "rb") as f:
+                checkpoint = pickle.load(f)
+                pcds = checkpoint['pcds']
+                pcd_combined = checkpoint['pcd_combined']
+                registration_data = checkpoint['registration_data']
+                start_frame = checkpoint['last_processed_frame'] + 1
+                log(f"Resuming from checkpoint, frame {start_frame}")
+        except Exception as e:
+            log(f"Error loading checkpoint: {e}. Starting from scratch.")
 
-    log(f"Processing {len(image_paths)} images...")
+    log(f"Processing {len(image_paths)} images, starting from frame {start_frame}...")
 
     # Camera parameters with better estimates for smartphone cameras
     try:
@@ -121,9 +136,10 @@ def reconstruct_with_open3d(frames_dir, output_dir, log_path, log_display=None, 
         log(traceback.format_exc())
         return (False, log_content) if log_display else False
 
-    for i, path in enumerate(image_paths):
+    for i, path in enumerate(image_paths[start_frame:]):  # Start from start_frame
+        abs_index = start_frame + i
         try:
-            log(f"Processing image {i+1}/{len(image_paths)}: {path.name}")
+            log(f"Processing image {abs_index+1}/{len(image_paths)}: {path.name}")
 
             # Load color image
             color = o3d.io.read_image(str(path))
@@ -154,73 +170,88 @@ def reconstruct_with_open3d(frames_dir, output_dir, log_path, log_display=None, 
             # Store individual point cloud for registration
             pcds.append(pcd)
 
+            # Perform point cloud registration when we have enough point clouds
+            if len(pcds) >= 2:
+                log("Performing point cloud registration")
+                try:
+                    # First point cloud is our reference
+                    pcd_combined = pcds[0]
+                    total_to_register = len(pcds) - 1
+                    registered_count = 0
+
+                    # Register each subsequent point cloud to the combined one
+                    for i in range(1, len(pcds)):
+                        start_time = datetime.now()
+
+                        if len(pcds[i].points) < 10:
+                            log(f"  Skipping point cloud {i} - too few points")
+                            continue
+
+                        log(f"  Registering point cloud {i} to combined cloud")
+
+                        # Both point clouds need normals for point-to-plane ICP
+                        pcd_combined.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+                        pcds[i].estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+
+                        # Point-to-point ICP registration (more robust than point-to-plane for our case)
+                        result = o3d.pipelines.registration.registration_icp(
+                            pcds[i], pcd_combined, 0.05, np.identity(4),
+                            o3d.pipelines.registration.TransformationEstimationPointToPoint(),
+                            o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=100))
+
+                        log(f"  Registration fitness: {result.fitness}")
+
+                        # Calculate processing time
+                        processing_time = (datetime.now() - start_time).total_seconds()
+
+                        # Transform the point cloud based on registration result
+                        pcds[i].transform(result.transformation)
+
+                        # Add to combined point cloud
+                        pcd_combined += pcds[i]
+
+                        # Update registration tracking
+                        registered_count += 1
+                        progress_percentage = (registered_count / total_to_register) * 100
+
+                        # Store metrics for this registration
+                        registration_data.append({
+                            'index': i,
+                            'timestamp': datetime.now().strftime("%H:%M:%S"),
+                            'points': len(pcds[i].points),
+                            'fitness': float(result.fitness),
+                            'processing_time': processing_time,
+                            'percent_complete': progress_percentage
+                        })
+
+                        log(f"  Progress: {progress_percentage:.1f}% ({registered_count}/{total_to_register})")
+                except Exception as e:
+                    log(f"Error during point cloud registration: {str(e)}")
+                    log(traceback.format_exc())
+                    # Continue with available point clouds even if registration fails
+            else:
+                log("Not enough valid point clouds for registration")
+                if len(pcds) == 1:
+                    pcd_combined = pcds[0]
         except Exception as e:
             log(f"Error processing image {path.name}: {str(e)}")
             log(traceback.format_exc())
-
-    # Perform point cloud registration when we have enough point clouds
-    if len(pcds) >= 2:
-        log("Performing point cloud registration")
-        try:
-            # First point cloud is our reference
-            pcd_combined = pcds[0]
-            total_to_register = len(pcds) - 1
-            registered_count = 0
-
-            # Register each subsequent point cloud to the combined one
-            for i in range(1, len(pcds)):
-                start_time = datetime.now()
-
-                if len(pcds[i].points) < 10:
-                    log(f"  Skipping point cloud {i} - too few points")
-                    continue
-
-                log(f"  Registering point cloud {i} to combined cloud")
-
-                # Both point clouds need normals for point-to-plane ICP
-                pcd_combined.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
-                pcds[i].estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
-
-                # Point-to-point ICP registration (more robust than point-to-plane for our case)
-                result = o3d.pipelines.registration.registration_icp(
-                    pcds[i], pcd_combined, 0.05, np.identity(4),
-                    o3d.pipelines.registration.TransformationEstimationPointToPoint(),
-                    o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=100))
-
-                log(f"  Registration fitness: {result.fitness}")
-
-                # Calculate processing time
-                processing_time = (datetime.now() - start_time).total_seconds()
-
-                # Transform the point cloud based on registration result
-                pcds[i].transform(result.transformation)
-
-                # Add to combined point cloud
-                pcd_combined += pcds[i]
-
-                # Update registration tracking
-                registered_count += 1
-                progress_percentage = (registered_count / total_to_register) * 100
-
-                # Store metrics for this registration
-                registration_data.append({
-                    'index': i,
-                    'timestamp': datetime.now().strftime("%H:%M:%S"),
-                    'points': len(pcds[i].points),
-                    'fitness': float(result.fitness),
-                    'processing_time': processing_time,
-                    'percent_complete': progress_percentage
-                })
-
-                log(f"  Progress: {progress_percentage:.1f}% ({registered_count}/{total_to_register})")
-        except Exception as e:
-            log(f"Error during point cloud registration: {str(e)}")
-            log(traceback.format_exc())
-            # Continue with available point clouds even if registration fails
-    else:
-        log("Not enough valid point clouds for registration")
-        if len(pcds) == 1:
-            pcd_combined = pcds[0]
+        # Save checkpoint data
+        if (abs_index + 1) % CHECKPOINT_INTERVAL == 0:
+            try:
+                checkpoint = {
+                    'pcds': pcds,
+                    'pcd_combined': pcd_combined,
+                    'registration_data': registration_data,
+                    'last_processed_frame': abs_index,
+                    'uuid': uuid,
+                    'frame_count': frame_count
+                }
+                with open(checkpoint_file, "wb") as f:
+                    pickle.dump(checkpoint, f)
+                log(f"Checkpoint saved at frame {abs_index+1}")
+            except Exception as e:
+                log(f"Error saving checkpoint: {e}")
 
     # Report combined point cloud stats
     if pcd_combined and len(pcd_combined.points) > 0:

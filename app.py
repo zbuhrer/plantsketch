@@ -1,10 +1,11 @@
 # app.py
 import streamlit as st
-from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import plotly.graph_objects as go
+import os
+import pickle
 
 from db import init_db, insert_scan, get_all_scans
 from extract_frames import extract_frames
@@ -18,23 +19,77 @@ input_method = st.radio(
     ["Video", "Images"]
 )
 
+# Initialize session state for resume functionality
+if 'scan_running' not in st.session_state:
+    st.session_state['scan_running'] = False
+
 if input_method == "Video":
     video_file = st.file_uploader("Upload a garden video", type=["mp4", "mov", "avi"])
     fps = st.slider("FPS to extract", 1, 10, 2)
 
+    # Check for existing checkpoint
+    checkpoint_available = False
+    if video_file:
+        video_name = video_file.name.split('.')[0]  # Name without extension
+        checkpoint_dir = f"checkpoints/{video_name}"
+        checkpoint_file = os.path.join(checkpoint_dir, "checkpoint.pkl")
+        checkpoint_available = os.path.exists(checkpoint_file)
+
+    col1, col2 = st.columns(2) # Create columns for buttons
+    with col1:
+        start_button_label = "Resume Scan with Video" if checkpoint_available else "Start Scan with Video"
+        start_scan_button = st.button(start_button_label, disabled=st.session_state['scan_running'])
+    with col2:
+        if checkpoint_available:
+            reset_button = st.button("Reset Scan", disabled=st.session_state['scan_running']) # Button to delete checkpoints
+        else:
+            reset_button = None
+
+
     if video_file:
         st.success("Video received.")
-        if st.button("Start Scan with Video"):
-            uuid, base = create_project_dir()
 
-            # Preserve original video extension
-            extension = video_file.name.split('.')[-1].lower()
-            video_path = base / f"input_video.{extension}"
-            with open(video_path, "wb") as f:
-                f.write(video_file.read())
+        if start_scan_button:
 
-            st.write("Extracting frames...")
-            frame_count = extract_frames(video_path, base / "frames", fps=fps)
+            st.session_state['scan_running'] = True # Disable buttons to prevent multiple executions
+
+            video_name = video_file.name.split('.')[0]  # Name without extension
+            checkpoint_dir = f"checkpoints/{video_name}"
+            os.makedirs(checkpoint_dir, exist_ok=True)  # Create checkpoint directory
+
+            if checkpoint_available and start_button_label == "Resume Scan with Video":
+
+                try:
+                    with open(checkpoint_file, "rb") as f:
+                        checkpoint_data = pickle.load(f)
+                    uuid = checkpoint_data['uuid']
+                    base = checkpoint_data['base']
+                    frame_count = checkpoint_data['frame_count'] #Load frame count
+                    log_content = checkpoint_data['log_content']
+                    start_frame = checkpoint_data['last_frame'] + 1 if 'last_frame' in checkpoint_data else 0  # Resume from next frame
+                    st.write(f"Resuming scan from frame {start_frame}...")
+                    st.write(f"Project directory: {base}") #Display project directory
+                except Exception as e:
+                    st.error(f"Error loading checkpoint: {e}. Starting a new scan.")
+                    uuid, base = create_project_dir()
+                    start_frame = 0
+                    log_content = "Starting reconstruction process...\n"
+
+            else:
+
+                uuid, base = create_project_dir()
+                start_frame = 0
+                log_content = "Starting reconstruction process...\n"
+
+                # Preserve original video extension
+                extension = video_file.name.split('.')[-1].lower()
+                video_path = base / f"input_video.{extension}"
+                with open(video_path, "wb") as f:
+                    f.write(video_file.read())
+
+                st.write("Extracting frames...")
+                frame_count = extract_frames(video_path, base / "frames", fps=fps) #Get frame_count
+
 
             # Create placeholder for real-time logging
             st.write("## Processing Status")
@@ -42,8 +97,7 @@ if input_method == "Video":
 
             with col1:
                 log_display = st.empty()
-                log_content = "Starting reconstruction process...\n"
-                log_display.code(log_content, language="text")
+                log_display.code(log_content, language="text") # Load existing log_content if available
 
             with col2:
                 st.write("### Registration Progress")
@@ -59,13 +113,18 @@ if input_method == "Video":
                 base / "output_pointcloud",
                 log_path,
                 log_display=log_display,
-                log_content=log_content
+                log_content=log_content,
+                start_frame=start_frame,
+                checkpoint_dir=checkpoint_dir,
+                uuid = uuid,
+                frame_count = frame_count #Pass frame count to reconstruct_with_open3d for checkpointing
             )
 
             insert_scan(uuid, video_file.name, frame_count, success)
 
             if success:
                 st.success(f"Scan complete! UUID: {uuid}")
+                st.session_state['scan_running'] = False #Re-enable buttons at the end of the process.
 
                 # Show the log for verification
                 with open(log_path, "r") as f:
@@ -171,9 +230,32 @@ if input_method == "Video":
                     st.warning(f"Could not create 3D visualization: {str(e)}")
             else:
                 st.error("Reconstruction failed.")
+                st.session_state['scan_running'] = False #Re-enable buttons even if the process fails
+
                 # Show error details
                 with open(log_path, "r") as f:
                     st.expander("Complete Error Details").code(f.read(), language="text")
+
+            st.session_state['scan_running'] = False #Re-enable buttons at the end of the process.
+
+
+        if reset_button:
+
+            # Delete the checkpoint directory
+
+            import shutil
+
+            try:
+                video_name = video_file.name.split('.')[0]  # Name without extension
+                checkpoint_dir = f"checkpoints/{video_name}"
+                shutil.rmtree(checkpoint_dir)
+                st.success(f"Checkpoint directory '{checkpoint_dir}' deleted successfully.")
+                checkpoint_available = False
+
+            except Exception as e:
+                st.error(f"Error deleting checkpoint directory: {e}")
+
+
 else:
     image_files = st.file_uploader("Upload garden images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
